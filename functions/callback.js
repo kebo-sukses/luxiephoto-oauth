@@ -1,17 +1,41 @@
 const https = require('https');
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+};
+
 exports.handler = async (event) => {
+  // Handle CORS preflight
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: ''
+    };
+  }
+
   const code = event.queryStringParameters.code;
   
   if (!code) {
     return {
       statusCode: 400,
-      body: 'Missing code parameter'
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Missing code parameter' })
     };
   }
 
   const client_id = process.env.OAUTH_CLIENT_ID;
   const client_secret = process.env.OAUTH_CLIENT_SECRET;
+
+  if (!client_id || !client_secret) {
+    return {
+      statusCode: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'OAuth credentials not configured' })
+    };
+  }
 
   try {
     const tokenResponse = await new Promise((resolve, reject) => {
@@ -47,20 +71,26 @@ exports.handler = async (event) => {
     if (tokenResponse.error) {
       return {
         statusCode: 400,
-        headers: { 'Content-Type': 'text/html' },
-        body: `<script>
-          window.opener.postMessage('authorization:github:error:${JSON.stringify(tokenResponse)}', '*');
-          window.close();
-        </script>`
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: tokenResponse.error, description: tokenResponse.error_description })
       };
     }
 
     const token = tokenResponse.access_token;
-    const provider = 'github';
 
+    // Return JSON for fetch requests
+    if (event.headers.accept && event.headers.accept.includes('application/json')) {
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, provider: 'github' })
+      };
+    }
+
+    // Return HTML for direct browser access
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'text/html' },
+      headers: { ...corsHeaders, 'Content-Type': 'text/html' },
       body: `<!DOCTYPE html>
 <html>
 <head><title>Authorization Complete</title></head>
@@ -68,17 +98,17 @@ exports.handler = async (event) => {
 <script>
 (function() {
   function receiveMessage(e) {
-    console.log("receiveMessage %o", e);
     window.opener.postMessage(
-      'authorization:${provider}:success:{"token":"${token}","provider":"${provider}"}',
+      'authorization:github:success:{"token":"${token}","provider":"github"}',
       e.origin
     );
     window.removeEventListener("message", receiveMessage, false);
   }
   window.addEventListener("message", receiveMessage, false);
-  window.opener.postMessage("authorizing:${provider}", "*");
+  window.opener.postMessage("authorizing:github", "*");
 })();
 </script>
+<p>Authorization complete. This window should close automatically.</p>
 </body>
 </html>`
     };
@@ -86,7 +116,8 @@ exports.handler = async (event) => {
   } catch (error) {
     return {
       statusCode: 500,
-      body: `Error: ${error.message}`
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: error.message })
     };
   }
 };
